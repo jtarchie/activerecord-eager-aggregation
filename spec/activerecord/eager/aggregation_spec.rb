@@ -38,7 +38,7 @@ RSpec.describe Activerecord::Eager::Aggregation do
           users.each do |user|
             user.posts.count # Second access uses cache - no query
           end
-        }.not_to exceed_query_limit(4) # 1 for users, 3 for first aggregations
+        }.not_to exceed_query_limit(2) # 1 for users, 1 for first aggregations
       end
 
       it "returns correct counts" do
@@ -131,7 +131,7 @@ RSpec.describe Activerecord::Eager::Aggregation do
           users.each do |user|
             user.posts.sum(:score)
           end
-        }.not_to exceed_query_limit(3) # 1 for users, 2 for first sum calls (then cached)
+        }.not_to exceed_query_limit(2) # 1 for users, 1 for first sum calls (then cached)
       end
 
       it "returns correct sum values" do
@@ -161,7 +161,7 @@ RSpec.describe Activerecord::Eager::Aggregation do
           users.each do |user|
             user.posts.average(:score)
           end
-        }.not_to exceed_query_limit(3)
+        }.not_to exceed_query_limit(2)
       end
 
       it "returns correct average values" do
@@ -191,7 +191,7 @@ RSpec.describe Activerecord::Eager::Aggregation do
           users.each do |user|
             user.posts.maximum(:score)
           end
-        }.not_to exceed_query_limit(3)
+        }.not_to exceed_query_limit(2)
       end
 
       it "returns correct maximum values" do
@@ -221,7 +221,7 @@ RSpec.describe Activerecord::Eager::Aggregation do
           users.each do |user|
             user.posts.minimum(:score)
           end
-        }.not_to exceed_query_limit(3)
+        }.not_to exceed_query_limit(2)
       end
 
       it "returns correct minimum values" do
@@ -271,7 +271,7 @@ RSpec.describe Activerecord::Eager::Aggregation do
           users.each do |user|
             user.categories.count
           end
-        }.not_to exceed_query_limit(3)
+        }.not_to exceed_query_limit(2)
       end
 
       it "returns correct counts for has_many :through" do
