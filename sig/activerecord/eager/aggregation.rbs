@@ -2,7 +2,41 @@ module Activerecord
   module Eager
     module Aggregation
       VERSION: String
-      # See the writing guide of rbs: https://github.com/ruby/rbs#guides
+
+      class Error < StandardError
+      end
+
+      module QueryMethods
+        def eager_aggregations: () -> ActiveRecord::Relation
+        def eager_aggregations_value=: (bool value) -> bool
+        def eager_aggregations_enabled?: () -> bool
+      end
+
+      module RelationExtension
+        def load: () -> untyped
+
+        private
+
+        def preload_aggregations: () -> void
+      end
+
+      module CalculationInterceptor
+        def count: (?untyped column_name) ?{ () -> untyped } -> Integer
+        def sum: (untyped column_name) ?{ () -> untyped } -> Numeric
+        def average: (untyped column_name) ?{ () -> untyped } -> Numeric?
+        def maximum: (untyped column_name) ?{ () -> untyped } -> untyped
+        def minimum: (untyped column_name) ?{ () -> untyped } -> untyped
+      end
     end
+  end
+end
+
+module ActiveRecord
+  class Base
+    def self.eager_aggregations: () -> Relation
+  end
+
+  class Relation
+    include Activerecord::Eager::Aggregation::QueryMethods
   end
 end
