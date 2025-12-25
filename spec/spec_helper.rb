@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-require "activerecord/eager/aggregation"
-require "active_record"
-require "rspec-sqlimit"
+require 'activerecord/eager/aggregation'
+require 'active_record'
+require 'rspec-sqlimit'
 
 # Setup in-memory SQLite database
 ActiveRecord::Base.establish_connection(
-  adapter: "sqlite3",
-  database: ":memory:"
+  adapter: 'sqlite3',
+  database: ':memory:'
 )
 
 # Define schema
@@ -54,7 +54,7 @@ class Post < ActiveRecord::Base
   has_many :categories, through: :categorizations
 
   scope :published, -> { where(published: true) }
-  scope :high_score, -> { where("score > 50") }
+  scope :high_score, -> { where('score > 50') }
 end
 
 class Category < ActiveRecord::Base
@@ -71,7 +71,7 @@ end
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
-  config.example_status_persistence_file_path = ".rspec_status"
+  config.example_status_persistence_file_path = '.rspec_status'
 
   # Disable RSpec exposing methods globally on `Module` and `main`
   config.disable_monkey_patching!

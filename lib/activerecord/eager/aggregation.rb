@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require_relative "aggregation/version"
-require "active_record"
-require "monitor"
+require_relative 'aggregation/version'
+require 'active_record'
+require 'monitor'
 
 module Activerecord
   module Eager
@@ -150,7 +150,7 @@ module Activerecord
       # Module to intercept calculation methods on relations
       # This works for both CollectionProxy and scoped relations
       module CalculationInterceptor
-        AGGREGATION_METHODS = [:count, :sum, :average, :maximum, :minimum].freeze
+        AGGREGATION_METHODS = %i[count sum average maximum minimum].freeze
 
         AGGREGATION_METHODS.each do |method|
           define_method(method) do |*args, &block|
@@ -176,9 +176,7 @@ module Activerecord
                   Aggregation.log("Batch fetching #{method} for #{all_owners.size} owners")
                   batch_fetch_aggregations_for_all(association, method, args, cache_key, all_owners)
                   # Return the cached value for this specific record
-                  if cache.key?(cache_key)
-                    return cache[cache_key]
-                  end
+                  return cache[cache_key] if cache.key?(cache_key)
                 end
 
                 # Single record or fallback - fetch individually and cache
@@ -208,12 +206,12 @@ module Activerecord
             else
               pred.class.name
             end
-          end.sort.join("|")
+          end.sort.join('|')
 
           [association.reflection.name, method, args, scope_key].hash
         end
 
-        def batch_fetch_aggregations_for_all(association, method, args, cache_key_template, all_owners)
+        def batch_fetch_aggregations_for_all(association, method, args, _cache_key_template, all_owners)
           reflection = association.reflection
           owner_key_attribute = reflection.active_record.primary_key
           owner_ids = all_owners.map { |owner| owner.public_send(owner_key_attribute) }
@@ -226,13 +224,12 @@ module Activerecord
             unscope_key = through_reflection.foreign_key.to_sym
 
             # Start with the klass and let merge() add the joins from association scope
-            base_query = reflection.klass.where(owner_foreign_key => owner_ids)
           else
             # For regular has_many
             owner_foreign_key = reflection.foreign_key
             unscope_key = reflection.foreign_key.to_sym
-            base_query = reflection.klass.where(owner_foreign_key => owner_ids)
           end
+          base_query = reflection.klass.where(owner_foreign_key => owner_ids)
 
           # Merge the scope from the association, but unscope the owner foreign key
           # to avoid overwriting our IN clause with a single owner's WHERE clause
@@ -256,7 +253,7 @@ module Activerecord
             else
               pred.class.name
             end
-          end.sort.join("|")
+          end.sort.join('|')
 
           # Cache results for all owners
           default_value = default_aggregation_value(method)
@@ -319,8 +316,6 @@ module Activerecord
             0
           when :sum
             Aggregation.configuration.default_nil_value_for_sum
-          else
-            nil
           end
         end
       end
