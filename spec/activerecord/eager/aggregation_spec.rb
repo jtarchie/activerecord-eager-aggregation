@@ -5,6 +5,146 @@ RSpec.describe Activerecord::Eager::Aggregation do
     expect(Activerecord::Eager::Aggregation::VERSION).not_to be nil
   end
 
+  describe "Configuration" do
+    after do
+      Activerecord::Eager::Aggregation.reset_configuration!
+    end
+
+    it "has default configuration values" do
+      config = Activerecord::Eager::Aggregation.configuration
+      expect(config.logger).to be_nil
+      expect(config.log_level).to eq(:debug)
+      expect(config.default_nil_value_for_sum).to eq(0)
+    end
+
+    it "allows configuration via block" do
+      custom_logger = double("logger")
+      Activerecord::Eager::Aggregation.configure do |config|
+        config.logger = custom_logger
+        config.log_level = :info
+        config.default_nil_value_for_sum = nil
+      end
+
+      config = Activerecord::Eager::Aggregation.configuration
+      expect(config.logger).to eq(custom_logger)
+      expect(config.log_level).to eq(:info)
+      expect(config.default_nil_value_for_sum).to be_nil
+    end
+
+    it "can reset configuration" do
+      Activerecord::Eager::Aggregation.configure do |config|
+        config.log_level = :warn
+      end
+
+      Activerecord::Eager::Aggregation.reset_configuration!
+
+      expect(Activerecord::Eager::Aggregation.configuration.log_level).to eq(:debug)
+    end
+  end
+
+  describe "AggregationCache" do
+    let(:cache) { Activerecord::Eager::Aggregation::AggregationCache.new }
+
+    it "stores and retrieves values" do
+      cache[:key1] = 100
+      expect(cache[:key1]).to eq(100)
+    end
+
+    it "checks for key existence" do
+      cache[:key1] = 100
+      expect(cache.key?(:key1)).to be true
+      expect(cache.key?(:key2)).to be false
+    end
+
+    it "clears all cached values" do
+      cache[:key1] = 100
+      cache[:key2] = 200
+      cache.clear
+      expect(cache.size).to eq(0)
+    end
+
+    it "returns size" do
+      cache[:key1] = 100
+      cache[:key2] = 200
+      expect(cache.size).to eq(2)
+    end
+
+    it "returns hash copy" do
+      cache[:key1] = 100
+      hash = cache.to_h
+      expect(hash).to eq({ key1: 100 })
+      # Modifying returned hash shouldn't affect cache
+      hash[:key2] = 200
+      expect(cache.key?(:key2)).to be false
+    end
+
+    it "uses fetch with block for missing keys" do
+      result = cache.fetch(:missing) { 42 }
+      expect(result).to eq(42)
+    end
+
+    it "returns cached value in fetch without calling block" do
+      cache[:existing] = 100
+      block_called = false
+      result = cache.fetch(:existing) { block_called = true; 42 }
+      expect(result).to eq(100)
+      expect(block_called).to be false
+    end
+
+    context "thread safety" do
+      it "handles concurrent access safely" do
+        threads = 10.times.map do |i|
+          Thread.new do
+            100.times do |j|
+              cache["thread_#{i}_#{j}".to_sym] = i * j
+              cache["thread_#{i}_#{j}".to_sym]
+            end
+          end
+        end
+
+        expect { threads.each(&:join) }.not_to raise_error
+        expect(cache.size).to eq(1000)
+      end
+    end
+  end
+
+  describe "RecordExtension" do
+    it "provides clear_aggregation_cache! method" do
+      user = User.create!(name: "Alice")
+      Post.create!(user: user)
+
+      users = User.eager_aggregations.all
+      users.first.posts.count
+
+      expect(users.first.aggregation_cache_size).to be > 0
+      users.first.clear_aggregation_cache!
+      expect(users.first.aggregation_cache_size).to eq(0)
+    end
+
+    it "provides aggregation_cache_enabled? method" do
+      user = User.create!(name: "Alice")
+
+      expect(user.aggregation_cache_enabled?).to be false
+
+      users = User.eager_aggregations.all
+      expect(users.first.aggregation_cache_enabled?).to be true
+    end
+
+    it "provides aggregation_cache_size method" do
+      user = User.create!(name: "Alice")
+      Post.create!(user: user, score: 10)
+
+      users = User.eager_aggregations.all
+      expect(users.first.aggregation_cache_size).to eq(0)
+
+      users.first.posts.count
+      expect(users.first.aggregation_cache_size).to eq(1)
+
+      users.first.posts.sum(:score)
+      expect(users.first.aggregation_cache_size).to eq(2)
+    end
+  end
+
   describe ".eager_aggregations" do
     context "basic count aggregation" do
       before do
@@ -297,7 +437,7 @@ RSpec.describe Activerecord::Eager::Aggregation do
       end
 
       it "handles records with no associations" do
-        user = User.create!(name: "Alice")
+        User.create!(name: "Alice")
         users = User.eager_aggregations.all
 
         expect(users.first.posts.count).to eq(0)
@@ -323,6 +463,141 @@ RSpec.describe Activerecord::Eager::Aggregation do
             u.posts.average(:score)
           end
         }.not_to exceed_query_limit(4) # 1 for users, 3 for first aggregations (then cached)
+      end
+
+      it "handles nil values in aggregations" do
+        user = User.create!(name: "Alice")
+        Post.create!(user: user, score: nil)
+        Post.create!(user: user, score: 10)
+        Post.create!(user: user, score: nil)
+
+        users = User.eager_aggregations.all
+
+        expect(users.first.posts.count).to eq(3)
+        expect(users.first.posts.sum(:score)).to eq(10)
+        expect(users.first.posts.average(:score).to_f).to eq(10.0)
+        expect(users.first.posts.maximum(:score)).to eq(10)
+        expect(users.first.posts.minimum(:score)).to eq(10)
+      end
+
+      it "returns 0 for sum with no matching records by default" do
+        User.create!(name: "Alice")
+        # No posts
+
+        users = User.eager_aggregations.all
+
+        expect(users.first.posts.sum(:score)).to eq(0)
+      end
+
+      it "returns nil for max/min/average with no matching records" do
+        User.create!(name: "Alice")
+        # No posts
+
+        users = User.eager_aggregations.all
+
+        expect(users.first.posts.maximum(:score)).to be_nil
+        expect(users.first.posts.minimum(:score)).to be_nil
+        expect(users.first.posts.average(:score)).to be_nil
+      end
+    end
+
+    context "count with column argument" do
+      before do
+        @user = User.create!(name: "Alice")
+        Post.create!(user: @user, score: 10)
+        Post.create!(user: @user, score: nil)
+        Post.create!(user: @user, score: 20)
+      end
+
+      it "counts only non-null values when column specified" do
+        users = User.eager_aggregations.all
+
+        # count(:score) should only count non-nil values
+        expect(users.first.posts.count(:score)).to eq(2)
+        # count without argument counts all rows
+        expect(users.first.posts.count).to eq(3)
+      end
+    end
+
+    context "single record optimization" do
+      it "works correctly with a single record" do
+        user = User.create!(name: "Alice")
+        Post.create!(user: user, score: 10)
+        Post.create!(user: user, score: 20)
+
+        users = User.eager_aggregations.where(id: user.id)
+
+        expect(users.first.posts.count).to eq(2)
+        expect(users.first.posts.sum(:score)).to eq(30)
+      end
+    end
+
+    context "chaining with other ActiveRecord methods" do
+      before do
+        @user1 = User.create!(name: "Alice", active: true)
+        @user2 = User.create!(name: "Bob", active: true)
+        @user3 = User.create!(name: "Charlie", active: false)
+
+        2.times { Post.create!(user: @user1) }
+        3.times { Post.create!(user: @user2) }
+        1.times { Post.create!(user: @user3) }
+      end
+
+      it "works with where clauses" do
+        users = User.eager_aggregations.where(active: true).order(:name)
+
+        expect(users.size).to eq(2)
+        expect(users[0].posts.count).to eq(2) # Alice
+        expect(users[1].posts.count).to eq(3) # Bob
+      end
+
+      it "works with limit" do
+        users = User.eager_aggregations.order(:name).limit(2)
+
+        expect(users.size).to eq(2)
+        expect(users[0].posts.count).to eq(2) # Alice
+        expect(users[1].posts.count).to eq(3) # Bob
+      end
+
+      it "works with includes" do
+        users = User.eager_aggregations.includes(:posts).order(:name)
+
+        expect(users[0].posts.count).to eq(2)
+        expect(users[1].posts.count).to eq(3)
+      end
+    end
+
+    context "polymorphic associations" do
+      # Note: Polymorphic associations require special handling
+      # This test documents current behavior
+      it "handles standard associations correctly when polymorphic exists" do
+        user = User.create!(name: "Alice")
+        Post.create!(user: user)
+
+        users = User.eager_aggregations.all
+        expect(users.first.posts.count).to eq(1)
+      end
+    end
+
+    context "large dataset performance" do
+      it "efficiently handles many records" do
+        # Create 50 users with varying post counts
+        50.times do |i|
+          user = User.create!(name: "User#{i}")
+          (i % 5).times { Post.create!(user: user, score: i) }
+        end
+
+        users = User.eager_aggregations.all
+
+        # Should only be 2 queries: 1 for users, 1 for count
+        expect {
+          users.each { |u| u.posts.count }
+        }.not_to exceed_query_limit(2)
+
+        # Verify correct counts
+        expect(users.find { |u| u.name == "User0" }.posts.count).to eq(0)
+        expect(users.find { |u| u.name == "User4" }.posts.count).to eq(4)
+        expect(users.find { |u| u.name == "User49" }.posts.count).to eq(4)
       end
     end
   end

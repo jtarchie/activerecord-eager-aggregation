@@ -6,10 +6,45 @@ module Activerecord
       class Error < StandardError
       end
 
+      # Configuration class for customizing gem behavior
+      class Configuration
+        attr_accessor logger: untyped
+        attr_accessor log_level: Symbol
+        attr_accessor default_nil_value_for_sum: (Integer | nil)
+
+        def initialize: () -> void
+        def effective_logger: () -> untyped
+      end
+
+      # Class methods for configuration and logging
+      def self.configuration: () -> Configuration
+      def self.configure: () { (Configuration) -> void } -> void
+      def self.reset_configuration!: () -> Configuration
+      def self.log: (String message, ?level: Symbol) -> void
+
+      # Thread-safe cache for storing aggregation results
+      class AggregationCache
+        def initialize: () -> void
+        def fetch: (untyped key) { () -> untyped } -> untyped
+        def key?: (untyped key) -> bool
+        def []: (untyped key) -> untyped
+        def []=: (untyped key, untyped value) -> untyped
+        def clear: () -> void
+        def size: () -> Integer
+        def to_h: () -> Hash[untyped, untyped]
+      end
+
       module QueryMethods
         def eager_aggregations: () -> ActiveRecord::Relation
         def eager_aggregations_value=: (bool value) -> bool
         def eager_aggregations_enabled?: () -> bool
+      end
+
+      # Methods added to ActiveRecord::Base instances
+      module RecordExtension
+        def clear_aggregation_cache!: () -> void
+        def aggregation_cache_size: () -> Integer
+        def aggregation_cache_enabled?: () -> bool
       end
 
       module RelationExtension
@@ -21,11 +56,21 @@ module Activerecord
       end
 
       module CalculationInterceptor
-        def count: (?untyped column_name) ?{ () -> untyped } -> Integer
+        AGGREGATION_METHODS: Array[Symbol]
+
+        def count: (?untyped column_name, ?Hash[Symbol, untyped] options) ?{ () -> untyped } -> Integer
         def sum: (untyped column_name) ?{ () -> untyped } -> Numeric
         def average: (untyped column_name) ?{ () -> untyped } -> Numeric?
         def maximum: (untyped column_name) ?{ () -> untyped } -> untyped
         def minimum: (untyped column_name) ?{ () -> untyped } -> untyped
+
+        private
+
+        def build_cache_key: (untyped association, Symbol method, Array[untyped] args) -> Integer
+        def batch_fetch_aggregations_for_all: (untyped association, Symbol method, Array[untyped] args, Integer cache_key_template, Array[untyped] all_owners) -> void
+        def apply_additional_predicates: (untyped base_query, Symbol unscope_key) -> untyped
+        def execute_grouped_aggregation: (untyped base_query, untyped group_key, Symbol method, Array[untyped] args) -> Hash[untyped, untyped]
+        def default_aggregation_value: (Symbol method) -> (Integer | nil)
       end
     end
   end
@@ -33,6 +78,8 @@ end
 
 module ActiveRecord
   class Base
+    include Activerecord::Eager::Aggregation::RecordExtension
+
     def self.eager_aggregations: () -> Relation
   end
 
