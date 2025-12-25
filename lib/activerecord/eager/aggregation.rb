@@ -74,30 +74,22 @@ module Activerecord
                 cache_key = [association.reflection.name, method, args, scope_key].hash
                 cache = record_owner.instance_variable_get(:@aggregation_cache)
 
-                puts "DEBUG: Checking cache, cache_key=#{cache_key}, has_key=#{cache.key?(cache_key)}" if ENV['DEBUG_BATCH']
-
                 if cache.key?(cache_key)
-                  puts "DEBUG: Cache hit!" if ENV['DEBUG_BATCH']
                   return cache[cache_key]
                 end
 
                 # Try to batch fetch aggregations for all records using GROUP BY
                 all_owners = record_owner.instance_variable_get(:@aggregation_batch_owners)
 
-                puts "DEBUG: all_owners=#{all_owners&.size}, method=#{method}" if ENV['DEBUG_BATCH']
-
                 if all_owners && all_owners.size > 1
-                  puts "DEBUG: Calling batch_fetch_aggregations_for_all" if ENV['DEBUG_BATCH']
                   # Batch fetch for multiple owners
                   batch_fetch_aggregations_for_all(association, method, args, scope_key, all_owners)
                   # Return the cached value for this specific record
                   if cache.key?(cache_key)
-                    puts "DEBUG: Returning cached value: #{cache[cache_key]}" if ENV['DEBUG_BATCH']
                     return cache[cache_key]
                   end
                 end
 
-                puts "DEBUG: Falling back to super" if ENV['DEBUG_BATCH']
                 # Single record or fallback - fetch individually and cache
                 result = super(*args, &block)
                 cache[cache_key] = result
