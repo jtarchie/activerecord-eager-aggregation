@@ -5,26 +5,26 @@ AllCops:
   SuggestExtensions: false
   TargetRubyVersion: 3.1
   Exclude:
-    - 'bin/**/*'
-    - 'vendor/**/*'
+    - "bin/**/*"
+    - "vendor/**/*"
 
 # Spec files are expected to be long
 Metrics/BlockLength:
   Exclude:
-    - 'spec/**/*'
-    - '*.gemspec'
+    - "spec/**/*"
+    - "*.gemspec"
 
 # Allow longer methods in core implementation
 Metrics/MethodLength:
   Max: 25
   Exclude:
-    - 'spec/**/*'
+    - "spec/**/*"
 
 # Allow higher complexity for core aggregation logic
 Metrics/AbcSize:
   Max: 35
   Exclude:
-    - 'spec/**/*'
+    - "spec/**/*"
 
 Metrics/CyclomaticComplexity:
   Max: 12
@@ -42,5 +42,5 @@ Metrics/ParameterLists:
 # Documentation not required for reopened classes
 Style/Documentation:
   Exclude:
-    - 'spec/**/*'
-    - 'lib/activerecord/eager/aggregation.rb'
+    - "spec/**/*"
+    - "lib/activerecord/eager/aggregation.rb"
