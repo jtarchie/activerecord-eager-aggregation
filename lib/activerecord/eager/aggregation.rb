@@ -236,12 +236,16 @@ module Activerecord
           base_query = reflection.klass.where(owner_foreign_key => owner_ids)
 
           # Merge the scope from the association, but unscope the owner foreign key
-          # to avoid overwriting our IN clause with a single owner's WHERE clause
-          association_scope = association.scope.unscope(where: unscope_key)
+          # to avoid overwriting our IN clause with a single owner's WHERE clause.
+          # Also unscope ORDER BY since it conflicts with GROUP BY in strict SQL mode
+          # (PostgreSQL and MySQL with ONLY_FULL_GROUP_BY).
+          association_scope = association.scope.unscope(where: unscope_key).unscope(:order)
           base_query = base_query.merge(association_scope.unscope(:select))
 
           # Apply any additional WHERE clauses from the current relation (e.g., .active)
+          # but strip any ORDER BY clauses since they conflict with GROUP BY
           base_query = apply_additional_predicates(base_query, unscope_key)
+          base_query = base_query.unscope(:order)
 
           # Perform the aggregation with GROUP BY
           results = execute_grouped_aggregation(base_query, owner_foreign_key, method, args)

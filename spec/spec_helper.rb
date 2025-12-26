@@ -114,8 +114,11 @@ class User < ActiveRecord::Base
   has_many :posts
   has_many :categorizations, through: :posts
   has_many :categories, through: :posts
+  has_many :recent_posts, -> { order(created_at: :desc) }, class_name: 'Post'
 
   scope :active_authors, -> { where(active: true) }
+  scope :by_name, -> { order(:name) }
+  scope :by_name_desc, -> { order(name: :desc) }
 end
 
 class Post < ActiveRecord::Base
@@ -125,6 +128,9 @@ class Post < ActiveRecord::Base
 
   scope :published, -> { where(published: true) }
   scope :high_score, -> { where('score > 50') }
+  scope :by_score, -> { order(:score) }
+  scope :by_score_desc, -> { order(score: :desc) }
+  scope :recent, -> { order(created_at: :desc) }
 end
 
 class Category < ActiveRecord::Base

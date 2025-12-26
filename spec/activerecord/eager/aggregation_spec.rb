@@ -560,6 +560,113 @@ RSpec.describe Activerecord::Eager::Aggregation do
       end
     end
 
+    context 'ORDER BY on scopes' do
+      before do
+        @user1 = User.create!(name: 'Alice')
+        @user2 = User.create!(name: 'Bob')
+        @user3 = User.create!(name: 'Charlie')
+
+        Post.create!(user: @user1, score: 30, published: true)
+        Post.create!(user: @user1, score: 10, published: true)
+        Post.create!(user: @user1, score: 20, published: false)
+
+        Post.create!(user: @user2, score: 100, published: true)
+        Post.create!(user: @user2, score: 50, published: true)
+
+        # user3 has no posts
+      end
+
+      it 'works with ORDER BY on parent scope' do
+        users = User.eager_aggregations.by_name.all
+
+        expect(users[0].name).to eq('Alice')
+        expect(users[0].posts.count).to eq(3)
+        expect(users[1].name).to eq('Bob')
+        expect(users[1].posts.count).to eq(2)
+        expect(users[2].name).to eq('Charlie')
+        expect(users[2].posts.count).to eq(0)
+      end
+
+      it 'works with ORDER BY DESC on parent scope' do
+        users = User.eager_aggregations.by_name_desc.all
+
+        expect(users[0].name).to eq('Charlie')
+        expect(users[0].posts.count).to eq(0)
+        expect(users[1].name).to eq('Bob')
+        expect(users[1].posts.count).to eq(2)
+        expect(users[2].name).to eq('Alice')
+        expect(users[2].posts.count).to eq(3)
+      end
+
+      it 'works with ORDER BY on association scope' do
+        users = User.eager_aggregations.by_name.all
+
+        # Aggregations on ordered scopes should work
+        expect(users[0].posts.by_score.count).to eq(3)
+        expect(users[0].posts.by_score_desc.count).to eq(3)
+        expect(users[1].posts.by_score.count).to eq(2)
+      end
+
+      it 'works with ORDER BY combined with WHERE on association' do
+        users = User.eager_aggregations.by_name.all
+
+        expect(users[0].posts.published.by_score.count).to eq(2)
+        expect(users[0].posts.published.by_score_desc.count).to eq(2)
+        expect(users[1].posts.published.by_score.count).to eq(2)
+      end
+
+      it 'correctly aggregates SUM with ORDER BY on association' do
+        users = User.eager_aggregations.by_name.all
+
+        expect(users[0].posts.by_score.sum(:score)).to eq(60) # Alice: 10+20+30
+        expect(users[1].posts.by_score_desc.sum(:score)).to eq(150) # Bob: 50+100
+        expect(users[2].posts.by_score.sum(:score)).to eq(0) # Charlie: no posts
+      end
+
+      it 'correctly aggregates MAX/MIN with ORDER BY on association' do
+        users = User.eager_aggregations.by_name.all
+
+        expect(users[0].posts.by_score.maximum(:score)).to eq(30)
+        expect(users[0].posts.by_score.minimum(:score)).to eq(10)
+        expect(users[1].posts.by_score_desc.maximum(:score)).to eq(100)
+        expect(users[1].posts.by_score_desc.minimum(:score)).to eq(50)
+      end
+
+      it 'reduces queries with ORDER BY on both parent and association' do
+        users = User.eager_aggregations.by_name_desc.all
+
+        expect do
+          users.each do |user|
+            user.posts.by_score.count
+            # Second iteration uses cache
+            user.posts.by_score.count
+          end
+        end.not_to exceed_query_limit(2) # 1 for users, 1 for aggregation
+      end
+
+      it 'works with has_many association that has default order' do
+        users = User.eager_aggregations.by_name.all
+
+        # recent_posts has a default order(created_at: :desc)
+        expect(users[0].recent_posts.count).to eq(3)
+        expect(users[1].recent_posts.count).to eq(2)
+        expect(users[2].recent_posts.count).to eq(0)
+      end
+
+      it 'works with combined ORDER BY, WHERE, and aggregation' do
+        users = User.eager_aggregations.where(active: true).order(name: :desc)
+
+        expect do
+          users.each do |user|
+            user.posts.published.by_score_desc.sum(:score)
+          end
+        end.not_to exceed_query_limit(2)
+
+        expect(users.find { |u| u.name == 'Alice' }.posts.published.by_score_desc.sum(:score)).to eq(40)
+        expect(users.find { |u| u.name == 'Bob' }.posts.published.by_score_desc.sum(:score)).to eq(150)
+      end
+    end
+
     context 'polymorphic associations' do
       # NOTE: Polymorphic associations require special handling
       # This test documents current behavior
