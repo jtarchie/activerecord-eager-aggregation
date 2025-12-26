@@ -99,8 +99,8 @@ RSpec.describe Activerecord::Eager::Aggregation do
         threads = 10.times.map do |i|
           Thread.new do
             100.times do |j|
-              cache["thread_#{i}_#{j}".to_sym] = i * j
-              cache["thread_#{i}_#{j}".to_sym]
+              cache[:"thread_#{i}_#{j}"] = i * j
+              cache[:"thread_#{i}_#{j}"]
             end
           end
         end

@@ -220,41 +220,54 @@ module Activerecord
           owner_key_attribute = reflection.active_record.primary_key
           owner_ids = all_owners.map { |owner| owner.public_send(owner_key_attribute) }
 
-          # Build the base query
-          if reflection.through_reflection
-            # For has_many :through, let ActiveRecord handle the joins
-            through_reflection = reflection.through_reflection
-            owner_foreign_key = "#{through_reflection.table_name}.#{through_reflection.foreign_key}"
-            unscope_key = through_reflection.foreign_key.to_sym
+          owner_foreign_key, unscope_key = determine_foreign_keys(reflection)
+          base_query = build_aggregation_query(reflection, association, owner_foreign_key, unscope_key, owner_ids)
 
-            # Start with the klass and let merge() add the joins from association scope
+          results = execute_grouped_aggregation(base_query, owner_foreign_key, method, args)
+          Aggregation.log("Batch query returned #{results.size} results for #{all_owners.size} owners")
+
+          cache_aggregation_results(
+            reflection: reflection, method: method, args: args,
+            all_owners: all_owners, owner_key_attribute: owner_key_attribute, results: results
+          )
+        end
+
+        def determine_foreign_keys(reflection)
+          if reflection.through_reflection
+            through = reflection.through_reflection
+            ["#{through.table_name}.#{through.foreign_key}", through.foreign_key.to_sym]
           else
-            # For regular has_many
-            owner_foreign_key = reflection.foreign_key
-            unscope_key = reflection.foreign_key.to_sym
+            [reflection.foreign_key, reflection.foreign_key.to_sym]
           end
+        end
+
+        def build_aggregation_query(reflection, association, owner_foreign_key, unscope_key, owner_ids)
           base_query = reflection.klass.where(owner_foreign_key => owner_ids)
 
           # Merge the scope from the association, but unscope the owner foreign key
           # to avoid overwriting our IN clause with a single owner's WHERE clause.
-          # Also unscope ORDER BY since it conflicts with GROUP BY in strict SQL mode
-          # (PostgreSQL and MySQL with ONLY_FULL_GROUP_BY).
+          # Also unscope ORDER BY since it conflicts with GROUP BY in strict SQL mode.
           association_scope = association.scope.unscope(where: unscope_key).unscope(:order)
           base_query = base_query.merge(association_scope.unscope(:select))
 
-          # Apply any additional WHERE clauses from the current relation (e.g., .active)
-          # but strip any ORDER BY clauses since they conflict with GROUP BY
-          base_query = apply_additional_predicates(base_query, unscope_key)
-          base_query = base_query.unscope(:order)
+          # Apply any additional WHERE clauses and strip ORDER BY
+          apply_additional_predicates(base_query, unscope_key).unscope(:order)
+        end
 
-          # Perform the aggregation with GROUP BY
-          results = execute_grouped_aggregation(base_query, owner_foreign_key, method, args)
+        def cache_aggregation_results(reflection:, method:, args:, all_owners:, owner_key_attribute:, results:)
+          scope_key = build_scope_key_from_predicates
+          default_value = default_aggregation_value(method)
 
-          Aggregation.log("Batch query returned #{results.size} results for #{all_owners.size} owners")
+          all_owners.each do |owner|
+            owner_cache = owner.instance_variable_get(:@aggregation_cache)
+            owner_id = owner.public_send(owner_key_attribute)
+            owner_cache_key = [reflection.name, method, args, scope_key].hash
+            owner_cache[owner_cache_key] = results[owner_id] || default_value
+          end
+        end
 
-          # Extract scope_key from cache_key_template for rebuilding cache keys
-          predicates = where_clause.send(:predicates)
-          scope_key = predicates.map do |pred|
+        def build_scope_key_from_predicates
+          where_clause.send(:predicates).map do |pred|
             if pred.respond_to?(:left) && pred.respond_to?(:right)
               left_name = pred.left.respond_to?(:name) ? pred.left.name : pred.left.to_s
               "#{pred.class.name}:#{left_name}:#{pred.right.class.name}"
@@ -262,15 +275,6 @@ module Activerecord
               pred.class.name
             end
           end.sort.join('|')
-
-          # Cache results for all owners
-          default_value = default_aggregation_value(method)
-          all_owners.each do |owner|
-            owner_cache = owner.instance_variable_get(:@aggregation_cache)
-            owner_id = owner.public_send(owner_key_attribute)
-            owner_cache_key = [reflection.name, method, args, scope_key].hash
-            owner_cache[owner_cache_key] = results[owner_id] || default_value
-          end
         end
 
         def apply_additional_predicates(base_query, unscope_key)
