@@ -10,4 +10,9 @@ gem 'rake', '~> 13.0'
 
 gem 'rspec', '~> 3.0'
 gem 'rspec-sqlimit'
+gem 'rubocop'
+
+# Database adapters - use DB env var to select which to load
+gem 'mysql2', '~> 0.5'
+gem 'pg', '~> 1.5'
 gem 'sqlite3', '~> 2.1'

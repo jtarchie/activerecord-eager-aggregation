@@ -94,6 +94,35 @@ After checking out the repo, run `bin/setup` to install dependencies. You can
 also run `bin/console` for an interactive prompt that will allow you to
 experiment.
 
+### Running Tests
+
+By default, tests run against SQLite in-memory:
+
+```bash
+bundle exec rspec
+```
+
+### Testing with PostgreSQL and MySQL
+
+The gem is tested against SQLite, PostgreSQL, and MySQL. To run tests against
+all databases:
+
+```bash
+# Start the database containers
+bin/test-databases start
+
+# Run tests against all databases
+bin/test-databases test
+
+# Or run against a specific database
+DB=postgresql bundle exec rspec
+DB=mysql bundle exec rspec
+DB=sqlite bundle exec rspec
+
+# Stop containers when done
+bin/test-databases stop
+```
+
 To install this gem onto your local machine, run `bundle exec rake install`. To
 release a new version, update the version number in `version.rb`, and then run
 `bundle exec rake release`, which will create a git tag for the version, push

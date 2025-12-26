@@ -47,10 +47,13 @@ GEM
     lint_roller (1.1.0)
     logger (1.7.0)
     minitest (5.26.2)
+    mysql2 (0.5.7)
+      bigdecimal
     parallel (1.27.0)
     parser (3.3.10.0)
       ast (~> 2.4.1)
       racc
+    pg (1.6.2-arm64-darwin)
     pp (0.6.3)
       prettyprint
     prettyprint (0.2.0)
@@ -117,6 +120,8 @@ PLATFORMS
 DEPENDENCIES
   activerecord-eager-aggregation!
   irb
+  mysql2 (~> 0.5)
+  pg (~> 1.5)
   rake (~> 13.0)
   rspec (~> 3.0)
   rspec-sqlimit

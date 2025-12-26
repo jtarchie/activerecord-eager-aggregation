@@ -52,11 +52,15 @@ module Activerecord
           @monitor = Monitor.new
         end
 
-        def fetch(key)
+        def fetch(key, default = nil)
           @monitor.synchronize do
-            return yield unless @cache.key?(key)
+            return @cache[key] if @cache.key?(key)
 
-            @cache[key]
+            if block_given?
+              yield
+            else
+              default
+            end
           end
         end
 

@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# Script to manage test databases for PostgreSQL and MySQL via Docker
+# Usage:
+#   bin/test-databases start    # Start both databases
+#   bin/test-databases stop     # Stop both databases
+#   bin/test-databases status   # Check status
+#   bin/test-databases test     # Run tests against all databases
+
+set -e
+
+POSTGRES_CONTAINER="eager-agg-postgres"
+MYSQL_CONTAINER="eager-agg-mysql"
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+MYSQL_PORT="${MYSQL_PORT:-3306}"
+
+start_postgres() {
+  echo "Starting PostgreSQL..."
+  if docker ps -a --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER}$"; then
+    docker start "$POSTGRES_CONTAINER" 2>/dev/null || true
+  else
+    docker run -d \
+      --name "$POSTGRES_CONTAINER" \
+      -e POSTGRES_USER=postgres \
+      -e POSTGRES_PASSWORD=postgres \
+      -e POSTGRES_DB=eager_aggregation_test \
+      -p "${POSTGRES_PORT}:5432" \
+      postgres:16-alpine
+  fi
+  echo "PostgreSQL started on port ${POSTGRES_PORT}"
+}
+
+start_mysql() {
+  echo "Starting MySQL..."
+  if docker ps -a --format '{{.Names}}' | grep -q "^${MYSQL_CONTAINER}$"; then
+    docker start "$MYSQL_CONTAINER" 2>/dev/null || true
+  else
+    docker run -d \
+      --name "$MYSQL_CONTAINER" \
+      -e MYSQL_ROOT_PASSWORD=mysql \
+      -e MYSQL_DATABASE=eager_aggregation_test \
+      -p "${MYSQL_PORT}:3306" \
+      mysql:8.0
+  fi
+  echo "MySQL started on port ${MYSQL_PORT}"
+}
+
+stop_databases() {
+  echo "Stopping databases..."
+  docker stop "$POSTGRES_CONTAINER" 2>/dev/null || true
+  docker stop "$MYSQL_CONTAINER" 2>/dev/null || true
+  echo "Databases stopped"
+}
+
+remove_databases() {
+  echo "Removing database containers..."
+  docker rm -f "$POSTGRES_CONTAINER" 2>/dev/null || true
+  docker rm -f "$MYSQL_CONTAINER" 2>/dev/null || true
+  echo "Containers removed"
+}
+
+status() {
+  echo "Database container status:"
+  echo ""
+  echo "PostgreSQL ($POSTGRES_CONTAINER):"
+  if docker ps --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER}$"; then
+    echo "  Status: Running"
+    echo "  Port: ${POSTGRES_PORT}"
+  elif docker ps -a --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER}$"; then
+    echo "  Status: Stopped"
+  else
+    echo "  Status: Not created"
+  fi
+  echo ""
+  echo "MySQL ($MYSQL_CONTAINER):"
+  if docker ps --format '{{.Names}}' | grep -q "^${MYSQL_CONTAINER}$"; then
+    echo "  Status: Running"
+    echo "  Port: ${MYSQL_PORT}"
+  elif docker ps -a --format '{{.Names}}' | grep -q "^${MYSQL_CONTAINER}$"; then
+    echo "  Status: Stopped"
+  else
+    echo "  Status: Not created"
+  fi
+}
+
+wait_for_postgres() {
+  echo "Waiting for PostgreSQL to be ready..."
+  local max_attempts=30
+  local attempt=0
+  while [ $attempt -lt $max_attempts ]; do
+    if docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; then
+      echo "PostgreSQL is ready!"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  echo "PostgreSQL failed to start in time"
+  return 1
+}
+
+wait_for_mysql() {
+  echo "Waiting for MySQL to be ready..."
+  local max_attempts=60
+  local attempt=0
+  while [ $attempt -lt $max_attempts ]; do
+    if docker exec "$MYSQL_CONTAINER" mysqladmin ping -h localhost -u root -pmysql --silent >/dev/null 2>&1; then
+      echo "MySQL is ready!"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  echo "MySQL failed to start in time"
+  return 1
+}
+
+run_tests() {
+  local failed=0
+
+  echo "========================================"
+  echo "Running tests with SQLite"
+  echo "========================================"
+  if DB=sqlite bundle exec rspec; then
+    echo "✓ SQLite tests passed"
+  else
+    echo "✗ SQLite tests failed"
+    failed=1
+  fi
+
+  echo ""
+  echo "========================================"
+  echo "Running tests with PostgreSQL"
+  echo "========================================"
+  if DB=postgresql bundle exec rspec; then
+    echo "✓ PostgreSQL tests passed"
+  else
+    echo "✗ PostgreSQL tests failed"
+    failed=1
+  fi
+
+  echo ""
+  echo "========================================"
+  echo "Running tests with MySQL"
+  echo "========================================"
+  if DB=mysql bundle exec rspec; then
+    echo "✓ MySQL tests passed"
+  else
+    echo "✗ MySQL tests failed"
+    failed=1
+  fi
+
+  echo ""
+  echo "========================================"
+  if [ $failed -eq 0 ]; then
+    echo "All database tests passed! ✓"
+  else
+    echo "Some database tests failed! ✗"
+    exit 1
+  fi
+}
+
+case "${1:-}" in
+  start)
+    start_postgres
+    start_mysql
+    wait_for_postgres
+    wait_for_mysql
+    ;;
+  stop)
+    stop_databases
+    ;;
+  restart)
+    stop_databases
+    start_postgres
+    start_mysql
+    wait_for_postgres
+    wait_for_mysql
+    ;;
+  remove|rm)
+    remove_databases
+    ;;
+  status)
+    status
+    ;;
+  test)
+    run_tests
+    ;;
+  postgres)
+    start_postgres
+    wait_for_postgres
+    ;;
+  mysql)
+    start_mysql
+    wait_for_mysql
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|remove|status|test|postgres|mysql}"
+    echo ""
+    echo "Commands:"
+    echo "  start    - Start both PostgreSQL and MySQL containers"
+    echo "  stop     - Stop both containers"
+    echo "  restart  - Restart both containers"
+    echo "  remove   - Remove both containers"
+    echo "  status   - Show container status"
+    echo "  test     - Run tests against all databases (sqlite, postgres, mysql)"
+    echo "  postgres - Start only PostgreSQL"
+    echo "  mysql    - Start only MySQL"
+    echo ""
+    echo "Environment variables:"
+    echo "  POSTGRES_PORT - PostgreSQL port (default: 5432)"
+    echo "  MYSQL_PORT    - MySQL port (default: 3306)"
+    exit 1
+    ;;
+esac
