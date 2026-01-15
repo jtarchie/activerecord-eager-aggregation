@@ -22,18 +22,6 @@ module Activerecord
       def self.reset_configuration!: () -> Configuration
       def self.log: (String message, ?level: Symbol) -> void
 
-      # Thread-safe cache for storing aggregation results
-      class AggregationCache
-        def initialize: () -> void
-        def fetch: (untyped key) { () -> untyped } -> untyped
-        def key?: (untyped key) -> bool
-        def []: (untyped key) -> untyped
-        def []=: (untyped key, untyped value) -> untyped
-        def clear: () -> void
-        def size: () -> Integer
-        def to_h: () -> Hash[untyped, untyped]
-      end
-
       module QueryMethods
         def eager_aggregations: () -> ActiveRecord::Relation
         def eager_aggregations_value=: (bool value) -> bool
@@ -66,15 +54,17 @@ module Activerecord
 
         private
 
+        def distinct?: () -> bool
+        def predicate_to_string: (untyped pred) -> String
+        def scope_key: () -> String
         def build_cache_key: (untyped association, Symbol method, Array[untyped] args) -> Integer
-        def batch_fetch_aggregations_for_all: (untyped association, Symbol method, Array[untyped] args, Integer cache_key_template, Array[untyped] all_owners) -> void
-        def determine_foreign_keys: (untyped reflection) -> [String, Symbol]
-        def build_aggregation_query: (untyped reflection, untyped association, String owner_foreign_key, Symbol unscope_key, Array[untyped] owner_ids) -> untyped
-        def cache_aggregation_results: (reflection: untyped, method: Symbol, args: Array[untyped], all_owners: Array[untyped], owner_key_attribute: untyped, results: Hash[untyped, untyped], ?is_distinct: bool) -> void
-        def build_scope_key_from_predicates: () -> String
+        def batch_fetch_aggregations_for_all: (untyped association, Symbol method, Array[untyped] args, Array[untyped] all_owners) -> void
+        def foreign_keys_for: (untyped reflection) -> [String, Symbol]
+        def build_aggregation_query: (untyped reflection, untyped association, String fk, Symbol unscope_key, Array[untyped] owner_ids) -> untyped
+        def cache_results: (untyped reflection, Symbol method, Array[untyped] args, Array[untyped] all_owners, untyped pk, Hash[untyped, untyped] results) -> void
         def apply_additional_predicates: (untyped base_query, Symbol unscope_key) -> untyped
         def execute_grouped_aggregation: (untyped base_query, untyped group_key, Symbol method, Array[untyped] args) -> Hash[untyped, untyped]
-        def default_aggregation_value: (Symbol method) -> (Integer | nil)
+        def default_value_for: (Symbol method) -> (Integer | nil)
       end
     end
   end

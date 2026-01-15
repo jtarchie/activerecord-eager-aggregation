@@ -2,7 +2,7 @@
 
 require_relative 'aggregation/version'
 require 'active_record'
-require 'monitor'
+require 'concurrent/map'
 
 module Activerecord
   module Eager
@@ -42,50 +42,6 @@ module Activerecord
           return unless logger
 
           logger.public_send(level, "[EagerAggregation] #{message}")
-        end
-      end
-
-      # Thread-safe cache wrapper for storing aggregation results
-      class AggregationCache
-        def initialize
-          @cache = {}
-          @monitor = Monitor.new
-        end
-
-        def fetch(key, default = nil)
-          @monitor.synchronize do
-            return @cache[key] if @cache.key?(key)
-
-            if block_given?
-              yield
-            else
-              default
-            end
-          end
-        end
-
-        def key?(key)
-          @monitor.synchronize { @cache.key?(key) }
-        end
-
-        def [](key)
-          @monitor.synchronize { @cache[key] }
-        end
-
-        def []=(key, value)
-          @monitor.synchronize { @cache[key] = value }
-        end
-
-        def clear
-          @monitor.synchronize { @cache.clear }
-        end
-
-        def size
-          @monitor.synchronize { @cache.size }
-        end
-
-        def to_h
-          @monitor.synchronize { @cache.dup }
         end
       end
 
@@ -143,7 +99,7 @@ module Activerecord
           # Also store a reference to all loaded records for batch queries
           @records.each do |record|
             unless record.instance_variable_defined?(:@aggregation_cache)
-              record.instance_variable_set(:@aggregation_cache, AggregationCache.new)
+              record.instance_variable_set(:@aggregation_cache, Concurrent::Map.new)
             end
             # Store reference to all batch owners for GROUP BY queries
             record.instance_variable_set(:@aggregation_batch_owners, @records)
@@ -178,7 +134,7 @@ module Activerecord
                 if all_owners && all_owners.size > 1
                   # Batch fetch for multiple owners
                   Aggregation.log("Batch fetching #{method} for #{all_owners.size} owners")
-                  batch_fetch_aggregations_for_all(association, method, args, cache_key, all_owners)
+                  batch_fetch_aggregations_for_all(association, method, args, all_owners)
                   # Return the cached value for this specific record
                   return cache[cache_key] if cache.key?(cache_key)
                 end
@@ -197,47 +153,41 @@ module Activerecord
 
         private
 
+        def distinct?
+          respond_to?(:distinct_value) && distinct_value
+        end
+
+        def predicate_to_string(pred)
+          if pred.respond_to?(:left) && pred.respond_to?(:right)
+            left_name = pred.left.respond_to?(:name) ? pred.left.name : pred.left.to_s
+            "#{pred.class.name}:#{left_name}:#{pred.right.class.name}"
+          else
+            pred.class.name
+          end
+        end
+
+        def scope_key
+          where_clause.send(:predicates).map { |p| predicate_to_string(p) }.sort.join('|')
+        end
+
         def build_cache_key(association, method, args)
-          # Build a stable cache key from the where clause predicates
-          # Convert predicates to a stable string representation
-          predicates = where_clause.send(:predicates)
-          scope_key = predicates.map do |pred|
-            # For each predicate, create a stable representation
-            # Use the SQL of the predicate's components to avoid object_id issues
-            if pred.respond_to?(:left) && pred.respond_to?(:right)
-              left_name = pred.left.respond_to?(:name) ? pred.left.name : pred.left.to_s
-              "#{pred.class.name}:#{left_name}:#{pred.right.class.name}"
-            else
-              pred.class.name
-            end
-          end.sort.join('|')
-
-          # Include distinct_value in cache key to differentiate .distinct.count from .count
-          is_distinct = respond_to?(:distinct_value) && distinct_value
-          [association.reflection.name, method, args, scope_key, is_distinct].hash
+          [association.reflection.name, method, args, scope_key, distinct?].hash
         end
 
-        def batch_fetch_aggregations_for_all(association, method, args, _cache_key_template, all_owners)
+        def batch_fetch_aggregations_for_all(association, method, args, all_owners)
           reflection = association.reflection
-          owner_key_attribute = reflection.active_record.primary_key
-          owner_ids = all_owners.map { |owner| owner.public_send(owner_key_attribute) }
+          pk = reflection.active_record.primary_key
+          owner_ids = all_owners.map { |owner| owner.public_send(pk) }
 
-          owner_foreign_key, unscope_key = determine_foreign_keys(reflection)
-          base_query = build_aggregation_query(reflection, association, owner_foreign_key, unscope_key, owner_ids)
+          fk, unscope_key = foreign_keys_for(reflection)
+          base_query = build_aggregation_query(reflection, association, fk, unscope_key, owner_ids)
+          results = execute_grouped_aggregation(base_query, fk, method, args)
 
-          # Check if distinct was called on the relation
-          is_distinct = respond_to?(:distinct_value) && distinct_value
-          results = execute_grouped_aggregation(base_query, owner_foreign_key, method, args, is_distinct: is_distinct)
           Aggregation.log("Batch query returned #{results.size} results for #{all_owners.size} owners")
-
-          cache_aggregation_results(
-            reflection: reflection, method: method, args: args,
-            all_owners: all_owners, owner_key_attribute: owner_key_attribute, results: results,
-            is_distinct: is_distinct
-          )
+          cache_results(reflection, method, args, all_owners, pk, results)
         end
 
-        def determine_foreign_keys(reflection)
+        def foreign_keys_for(reflection)
           if reflection.through_reflection
             through = reflection.through_reflection
             ["#{through.table_name}.#{through.foreign_key}", through.foreign_key.to_sym]
@@ -246,93 +196,62 @@ module Activerecord
           end
         end
 
-        def build_aggregation_query(reflection, association, owner_foreign_key, unscope_key, owner_ids)
-          base_query = reflection.klass.where(owner_foreign_key => owner_ids)
+        def build_aggregation_query(reflection, association, fk, unscope_key, owner_ids)
+          base = reflection.klass.where(fk => owner_ids)
 
           # Merge the scope from the association, but unscope the owner foreign key
           # to avoid overwriting our IN clause with a single owner's WHERE clause.
           # Also unscope ORDER BY since it conflicts with GROUP BY in strict SQL mode.
-          association_scope = association.scope.unscope(where: unscope_key).unscope(:order)
-          base_query = base_query.merge(association_scope.unscope(:select))
+          association_scope = association.scope.unscope(where: unscope_key).unscope(:order).unscope(:select)
+          merged = base.merge(association_scope)
 
-          # Apply any additional WHERE clauses and strip ORDER BY
-          apply_additional_predicates(base_query, unscope_key).unscope(:order)
+          apply_additional_predicates(merged, unscope_key).unscope(:order)
         end
 
-        def cache_aggregation_results(reflection:, method:, args:, all_owners:, owner_key_attribute:, results:, is_distinct: false)
-          scope_key = build_scope_key_from_predicates
-          default_value = default_aggregation_value(method)
+        def cache_results(reflection, method, args, all_owners, pk, results)
+          default = default_value_for(method)
+          key_base = [reflection.name, method, args, scope_key, distinct?]
 
           all_owners.each do |owner|
-            owner_cache = owner.instance_variable_get(:@aggregation_cache)
-            owner_id = owner.public_send(owner_key_attribute)
-            owner_cache_key = [reflection.name, method, args, scope_key, is_distinct].hash
-            owner_cache[owner_cache_key] = results[owner_id] || default_value
+            cache = owner.instance_variable_get(:@aggregation_cache)
+            cache[key_base.hash] = results[owner.public_send(pk)] || default
           end
         end
 
-        def build_scope_key_from_predicates
-          where_clause.send(:predicates).map do |pred|
-            if pred.respond_to?(:left) && pred.respond_to?(:right)
-              left_name = pred.left.respond_to?(:name) ? pred.left.name : pred.left.to_s
-              "#{pred.class.name}:#{left_name}:#{pred.right.class.name}"
-            else
-              pred.class.name
-            end
-          end.sort.join('|')
-        end
-
         def apply_additional_predicates(base_query, unscope_key)
-          # Apply any additional WHERE clauses from the current relation (e.g., .active)
-          # We need to preserve predicates from the chained scope (like .active)
-          # but exclude the owner foreign key predicate which we handle separately
           relation_where = where_clause
           return base_query if relation_where.empty?
 
-          # Get the AST (predicates) from the current relation's where clause
           predicates = relation_where.send(:predicates).reject do |pred|
-            # Skip predicates on the owner foreign key (already handled by our IN clause)
             pred.respond_to?(:left) &&
               pred.left.respond_to?(:name) &&
               pred.left.name.to_s == unscope_key.to_s
           end
 
-          # Apply filtered predicates by merging them into the query
-          predicates.each do |predicate|
-            base_query = base_query.where(predicate)
-          end
-
-          base_query
+          predicates.reduce(base_query) { |q, pred| q.where(pred) }
         end
 
-        def execute_grouped_aggregation(base_query, group_key, method, args, is_distinct: false)
+        def execute_grouped_aggregation(base_query, group_key, method, args)
+          grouped = base_query.group(group_key)
+          column = args.first
+
           case method
           when :count
-            # Handle DISTINCT counts: .distinct.count(:column_name)
-            if is_distinct && args.first && args.first != :all
-              base_query.group(group_key).distinct.count(args.first)
-            elsif args.first && args.first != :all
-              base_query.group(group_key).count(args.first)
-            else
-              base_query.group(group_key).count
-            end
-          when :sum
-            base_query.group(group_key).sum(args.first)
-          when :average
-            base_query.group(group_key).average(args.first)
-          when :maximum
-            base_query.group(group_key).maximum(args.first)
-          when :minimum
-            base_query.group(group_key).minimum(args.first)
+            return grouped.distinct.count(column) if distinct? && column && column != :all
+            return grouped.count(column) if column && column != :all
+
+            grouped.count
+          when :sum      then grouped.sum(column)
+          when :average  then grouped.average(column)
+          when :maximum  then grouped.maximum(column)
+          when :minimum  then grouped.minimum(column)
           end
         end
 
-        def default_aggregation_value(method)
+        def default_value_for(method)
           case method
-          when :count
-            0
-          when :sum
-            Aggregation.configuration.default_nil_value_for_sum
+          when :count then 0
+          when :sum   then Aggregation.configuration.default_nil_value_for_sum
           end
         end
       end
