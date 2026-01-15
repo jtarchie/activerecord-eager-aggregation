@@ -512,6 +512,62 @@ RSpec.describe Activerecord::Eager::Aggregation do
       end
     end
 
+    context 'distinct count' do
+      before do
+        @user1 = User.create!(name: 'Alice')
+        @user2 = User.create!(name: 'Bob')
+
+        # Alice has posts with duplicate scores
+        Post.create!(user: @user1, score: 10)
+        Post.create!(user: @user1, score: 10)
+        Post.create!(user: @user1, score: 20)
+        Post.create!(user: @user1, score: 20)
+        Post.create!(user: @user1, score: 30)
+
+        # Bob has posts with unique scores
+        Post.create!(user: @user2, score: 100)
+        Post.create!(user: @user2, score: 200)
+      end
+
+      it 'triggers N+1 queries for distinct count without eager_aggregations' do
+        users = User.all
+
+        expect do
+          users.each do |user|
+            user.posts.distinct.count(:score)
+          end
+        end.to exceed_query_limit(2)
+      end
+
+      it 'counts distinct values using .distinct.count(:column)' do
+        users = User.eager_aggregations.all.sort_by(&:name)
+
+        # Alice has 5 posts but only 3 distinct scores
+        expect(users[0].posts.distinct.count(:score)).to eq(3)
+        # Bob has 2 posts with 2 distinct scores
+        expect(users[1].posts.distinct.count(:score)).to eq(2)
+      end
+
+      it 'reduces queries for distinct count with eager_aggregations' do
+        users = User.eager_aggregations.all
+
+        expect do
+          users.each do |user|
+            user.posts.distinct.count(:score)
+            user.posts.distinct.count(:score) # cached
+          end
+        end.not_to exceed_query_limit(2)
+      end
+
+      it 'treats distinct and non-distinct as separate cache keys' do
+        users = User.eager_aggregations.all.sort_by(&:name)
+
+        # Both calls should work correctly without mixing up caches
+        expect(users[0].posts.count(:score)).to eq(5) # All posts
+        expect(users[0].posts.distinct.count(:score)).to eq(3) # Distinct scores
+      end
+    end
+
     context 'single record optimization' do
       it 'works correctly with a single record' do
         user = User.create!(name: 'Alice')
@@ -698,6 +754,137 @@ RSpec.describe Activerecord::Eager::Aggregation do
         expect(users.find { |u| u.name == 'User0' }.posts.count).to eq(0)
         expect(users.find { |u| u.name == 'User4' }.posts.count).to eq(4)
         expect(users.find { |u| u.name == 'User49' }.posts.count).to eq(4)
+      end
+    end
+
+    context 'conditional association scopes' do
+      before do
+        @user1 = User.create!(name: 'Alice')
+        @user2 = User.create!(name: 'Bob')
+        @user3 = User.create!(name: 'Charlie')
+
+        # Alice: 2 published, 1 high score
+        Post.create!(user: @user1, published: true, score: 10)
+        Post.create!(user: @user1, published: true, score: 80)
+        Post.create!(user: @user1, published: false, score: 30)
+
+        # Bob: 1 published, 2 high score
+        Post.create!(user: @user2, published: true, score: 60)
+        Post.create!(user: @user2, published: false, score: 90)
+
+        # Charlie: no posts
+      end
+
+      it 'triggers N+1 queries for conditional associations without eager_aggregations' do
+        users = User.all
+
+        expect do
+          users.each do |user|
+            user.published_posts.count
+          end
+        end.to exceed_query_limit(3)
+      end
+
+      it 'works with association that has built-in scope (published_posts)' do
+        users = User.eager_aggregations.all.sort_by(&:name)
+
+        expect(users[0].published_posts.count).to eq(2) # Alice
+        expect(users[1].published_posts.count).to eq(1) # Bob
+        expect(users[2].published_posts.count).to eq(0) # Charlie
+      end
+
+      it 'works with association that has built-in WHERE scope (high_score_posts)' do
+        users = User.eager_aggregations.all.sort_by(&:name)
+
+        expect(users[0].high_score_posts.count).to eq(1) # Alice (score > 50)
+        expect(users[1].high_score_posts.count).to eq(2) # Bob
+        expect(users[2].high_score_posts.count).to eq(0) # Charlie
+      end
+
+      it 'reduces queries for conditional associations' do
+        users = User.eager_aggregations.all
+
+        expect do
+          users.each do |user|
+            user.published_posts.count
+            user.published_posts.count # cached
+          end
+        end.not_to exceed_query_limit(2)
+      end
+
+      it 'supports aggregation functions on conditional associations' do
+        users = User.eager_aggregations.all.sort_by(&:name)
+
+        expect(users[0].published_posts.sum(:score)).to eq(90) # Alice: 10+80
+        expect(users[0].high_score_posts.maximum(:score)).to eq(80) # Alice
+        expect(users[1].high_score_posts.average(:score).to_f).to eq(75.0) # Bob: (60+90)/2
+      end
+    end
+
+    context 'cache behavior after modifications' do
+      it 'does not automatically invalidate cache after adding records' do
+        user = User.create!(name: 'Alice')
+        Post.create!(user: user)
+
+        users = User.eager_aggregations.all
+        expect(users.first.posts.count).to eq(1)
+
+        # Add a new post
+        Post.create!(user: user)
+
+        # The cached count is still 1 (stale but expected behavior)
+        # Users need to reload or re-query to get fresh data
+        expect(users.first.posts.count).to eq(1)
+
+        # Manual cache clear gets fresh count
+        users.first.clear_aggregation_cache!
+        # After clearing cache, next call will re-fetch
+        # But since batch_owners may have changed, let's verify manual clear works
+        expect(users.first.aggregation_cache_size).to eq(0)
+      end
+
+      it 'can manually clear cache and re-fetch' do
+        user = User.create!(name: 'Alice')
+        Post.create!(user: user)
+
+        users = User.eager_aggregations.all
+        expect(users.first.posts.count).to eq(1)
+
+        users.first.clear_aggregation_cache!
+
+        # Re-querying fresh data
+        fresh_users = User.eager_aggregations.all
+        Post.create!(user: user) # Add another post
+
+        # Fresh query gets current count
+        fresh_users2 = User.eager_aggregations.all
+        expect(fresh_users2.first.posts.count).to eq(2)
+      end
+    end
+
+    context 'chained scopes on associations' do
+      before do
+        @user = User.create!(name: 'Alice')
+        Post.create!(user: @user, published: true, score: 10)
+        Post.create!(user: @user, published: true, score: 80)
+        Post.create!(user: @user, published: false, score: 90)
+      end
+
+      it 'handles multiple chained scopes' do
+        users = User.eager_aggregations.all
+
+        # published AND high_score
+        expect(users.first.posts.published.high_score.count).to eq(1)
+      end
+
+      it 'caches different scope combinations separately' do
+        users = User.eager_aggregations.all
+
+        users.first.posts.published.count
+        users.first.posts.high_score.count
+        users.first.posts.published.high_score.count
+
+        expect(users.first.aggregation_cache_size).to eq(3)
       end
     end
   end

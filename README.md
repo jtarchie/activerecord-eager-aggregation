@@ -88,6 +88,84 @@ users.each do |user|
 end
 ```
 
+### Associations with Built-in Scopes
+
+If your association has a built-in scope (lambda), eager aggregations works
+correctly with those as well.
+
+```ruby
+class User < ActiveRecord::Base
+  has_many :posts
+  has_many :published_posts, -> { where(published: true) }, class_name: 'Post'
+  has_many :recent_posts, -> { order(created_at: :desc) }, class_name: 'Post'
+end
+
+users = User.eager_aggregations.all
+users.each do |user|
+  # Works with scoped associations
+  puts "Published posts: #{user.published_posts.count}"
+  puts "Recent posts: #{user.recent_posts.count}"
+end
+```
+
+### Distinct Counts
+
+You can count distinct column values using the standard ActiveRecord `.distinct`
+method.
+
+```ruby
+users = User.eager_aggregations.all
+users.each do |user|
+  # Count distinct scores across all posts
+  puts "Unique scores: #{user.posts.distinct.count(:score)}"
+end
+```
+
+### Cache Management
+
+Each record has a cache that stores aggregation results. You can inspect and
+manage this cache:
+
+```ruby
+users = User.eager_aggregations.all
+user = users.first
+
+# Check if cache is enabled
+user.aggregation_cache_enabled?  # => true
+
+# Check cache size
+user.aggregation_cache_size  # => 0
+
+user.posts.count  # Populates cache
+user.aggregation_cache_size  # => 1
+
+# Clear the cache manually (useful after mutations)
+user.clear_aggregation_cache!
+user.aggregation_cache_size  # => 0
+```
+
+**Note:** The cache is not automatically invalidated when records are created,
+updated, or deleted. If you modify associated records, either re-query with
+`eager_aggregations` or call `clear_aggregation_cache!` on affected records.
+
+## Configuration
+
+You can configure the gem's behavior:
+
+```ruby
+Activerecord::Eager::Aggregation.configure do |config|
+  # Set a logger for debugging (defaults to Rails.logger if available)
+  config.logger = Rails.logger
+
+  # Set log level for eager aggregation messages (default: :debug)
+  config.log_level = :debug
+
+  # Default value for sum when no records match (default: 0)
+  # Set to nil to return nil instead of 0
+  config.default_nil_value_for_sum = 0
+end
+```
+
 ## Development
 
 After checking out the repo, run `bin/setup` to install dependencies. You can

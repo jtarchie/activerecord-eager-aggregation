@@ -212,7 +212,9 @@ module Activerecord
             end
           end.sort.join('|')
 
-          [association.reflection.name, method, args, scope_key].hash
+          # Include distinct_value in cache key to differentiate .distinct.count from .count
+          is_distinct = respond_to?(:distinct_value) && distinct_value
+          [association.reflection.name, method, args, scope_key, is_distinct].hash
         end
 
         def batch_fetch_aggregations_for_all(association, method, args, _cache_key_template, all_owners)
@@ -223,12 +225,15 @@ module Activerecord
           owner_foreign_key, unscope_key = determine_foreign_keys(reflection)
           base_query = build_aggregation_query(reflection, association, owner_foreign_key, unscope_key, owner_ids)
 
-          results = execute_grouped_aggregation(base_query, owner_foreign_key, method, args)
+          # Check if distinct was called on the relation
+          is_distinct = respond_to?(:distinct_value) && distinct_value
+          results = execute_grouped_aggregation(base_query, owner_foreign_key, method, args, is_distinct: is_distinct)
           Aggregation.log("Batch query returned #{results.size} results for #{all_owners.size} owners")
 
           cache_aggregation_results(
             reflection: reflection, method: method, args: args,
-            all_owners: all_owners, owner_key_attribute: owner_key_attribute, results: results
+            all_owners: all_owners, owner_key_attribute: owner_key_attribute, results: results,
+            is_distinct: is_distinct
           )
         end
 
@@ -254,14 +259,14 @@ module Activerecord
           apply_additional_predicates(base_query, unscope_key).unscope(:order)
         end
 
-        def cache_aggregation_results(reflection:, method:, args:, all_owners:, owner_key_attribute:, results:)
+        def cache_aggregation_results(reflection:, method:, args:, all_owners:, owner_key_attribute:, results:, is_distinct: false)
           scope_key = build_scope_key_from_predicates
           default_value = default_aggregation_value(method)
 
           all_owners.each do |owner|
             owner_cache = owner.instance_variable_get(:@aggregation_cache)
             owner_id = owner.public_send(owner_key_attribute)
-            owner_cache_key = [reflection.name, method, args, scope_key].hash
+            owner_cache_key = [reflection.name, method, args, scope_key, is_distinct].hash
             owner_cache[owner_cache_key] = results[owner_id] || default_value
           end
         end
@@ -300,11 +305,11 @@ module Activerecord
           base_query
         end
 
-        def execute_grouped_aggregation(base_query, group_key, method, args)
+        def execute_grouped_aggregation(base_query, group_key, method, args, is_distinct: false)
           case method
           when :count
-            # Handle DISTINCT counts: count(:column_name, distinct: true)
-            if args.length >= 2 && args[1].is_a?(Hash) && args[1][:distinct]
+            # Handle DISTINCT counts: .distinct.count(:column_name)
+            if is_distinct && args.first && args.first != :all
               base_query.group(group_key).distinct.count(args.first)
             elsif args.first && args.first != :all
               base_query.group(group_key).count(args.first)
